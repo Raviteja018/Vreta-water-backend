@@ -90,7 +90,7 @@ router.get('/customers', verifyAdmin, async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
-
+    
 // GET /api/admin/contacts - Get all contact form submissions
 router.get('/contacts', verifyAdmin, async (req, res) => {
     try {
@@ -104,32 +104,84 @@ router.get('/contacts', verifyAdmin, async (req, res) => {
 // POST /api/admin/users - Create new user
 router.post('/users', verifyAdmin, async (req, res) => {
     try {
-        const { username, password, email, fullName, phone, role, department, position } = req.body;
+        const { username, password, email, fullName, phone, role = 'employee', department = 'General', position = 'Staff' } = req.body;
 
-        // Check if user already exists
-        const existingUser = await User.findOne({ $or: [{ username }, { email }] });
-        if (existingUser) {
-            return res.status(400).json({ error: 'Username or email already exists' });
+        // Input validation
+        if (!username || !password) {
+            return res.status(400).json({ error: 'Username and password are required' });
         }
 
-        const user = new User({
-            username,
-            password,
-            email,
-            fullName,
-            phone,
-            role,
-            department,
-            position
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+        }
+
+        // Check if user already exists
+        const existingUser = await User.findOne({ 
+            $or: [
+                { username: username.trim() }, 
+                ...(email ? [{ email: email.trim() }] : []) 
+            ] 
         });
 
+        if (existingUser) {
+            if (existingUser.username === username.trim()) {
+                return res.status(400).json({ error: 'Username already exists' });
+            }
+            if (email && existingUser.email === email.trim()) {
+                return res.status(400).json({ error: 'Email already in use' });
+            }
+        }
+
+        // Create new user
+        const user = new User({
+            username: username.trim(),
+            password: password, // Will be hashed by pre-save hook
+            email: email ? email.trim() : undefined,
+            fullName: fullName ? fullName.trim() : undefined,
+            phone: phone ? phone.trim() : undefined,
+            role: ['manager', 'employee'].includes(role) ? role : 'employee',
+            department: department || 'General',
+            position: position || 'Staff',
+            status: 'active',
+            isActive: true
+        });
+
+        // Save user (password will be hashed by pre-save hook)
         await user.save();
+        
+        // Prepare response without sensitive data
         const userResponse = user.toObject();
         delete userResponse.password;
+        delete userResponse.__v;
 
-        res.status(201).json(userResponse);
+        res.status(201).json({
+            message: 'User created successfully',
+            user: userResponse
+        });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('Error creating user:', error);
+        
+        // Handle duplicate key errors
+        if (error.code === 11000) {
+            const field = Object.keys(error.keyPattern)[0];
+            return res.status(400).json({ 
+                error: `A user with this ${field} already exists` 
+            });
+        }
+        
+        // Handle validation errors
+        if (error.name === 'ValidationError') {
+            const messages = Object.values(error.errors).map(val => val.message);
+            return res.status(400).json({ 
+                error: 'Validation error',
+                details: messages 
+            });
+        }
+        
+        res.status(500).json({ 
+            error: 'Server error while creating user',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 });
 
